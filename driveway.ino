@@ -27,6 +27,7 @@ char httpStr[256] = {0};
 #define SYS_STATUS_PAGE_STR_LEN 2048
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
 bool lights_status = false;
+bool remote_control_inited = false;
 
 char* getSystemStatus() {
 
@@ -53,7 +54,7 @@ char* getSystemStatus() {
 }
 
 
-void connectToWifi()
+bool connectToWifi()
 {
   int wifiRetries = 0;
   WiFi.mode(WIFI_STA);
@@ -69,26 +70,15 @@ void connectToWifi()
     Serial.println("WiFi connected");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    return true;
   } else {
      Serial.println("WiFi failed to connect");
   }
+  return false;
 }
 
-void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, OFF);
-  pinMode(DRIVEWAY_LIGHTS, OUTPUT);
-  digitalWrite(DRIVEWAY_LIGHTS, LOW);
-
-  Serial.begin(115200);
-  delay(1000);
-  Serial.println("Hello");
-
-  Serial.println(); Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  connectToWifi();
+void init_remote_control()
+{
   MDNS.begin(ota_hostname);
   httpUpdater.setup(&httpServer);
   httpServer.begin();
@@ -103,7 +93,22 @@ void setup() {
     digitalWrite(DRIVEWAY_LIGHTS, lights_status ? HIGH : LOW);
     httpServer.send(200, "text/plain", lights_status ? "Turn Off" : "Turn On");
   });
+  remote_control_inited = true;
+}
 
+void setup() {
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, OFF);
+
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("Hello");
+
+  Serial.println(); Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  if(connectToWifi()) init_remote_control();
 }
 
 
@@ -111,7 +116,11 @@ void loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
-    connectToWifi();
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    delay(500);
+    if (WiFi.status() == WL_CONNECTED && !remote_control_inited)
+      init_remote_control();
   } else {
     httpServer.handleClient();
     MDNS.update();
