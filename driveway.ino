@@ -10,6 +10,7 @@
 #define MAX_WIFI_WAIT   10
 
 #define DRIVEWAY_LIGHTS  14
+#define HOUSE_SWITCH     12
 
 // the builtin led is active low for some dipshit reason
 #define ON  LOW
@@ -100,6 +101,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, OFF);
 
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  pinMode(HOUSE_SWITCH, INPUT_PULLUP);
+
   Serial.begin(115200);
   delay(1000);
   Serial.println("Hello");
@@ -113,6 +117,11 @@ void setup() {
 
 
 void loop() {
+
+  if(digitalRead(HOUSE_SWITCH))
+    digitalWrite(LED_BUILTIN, OFF);
+  else
+    digitalWrite(LED_BUILTIN, ON);
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
