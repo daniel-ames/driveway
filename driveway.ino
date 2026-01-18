@@ -16,6 +16,9 @@
 #define ON  LOW
 #define OFF HIGH
 
+#define HOUSE_SWITCH_ON   LOW
+#define HOUSE_SWITCH_OFF  HIGH
+
 const char* ota_hostname = "driveway";
 
 const char* host = "optiplex";
@@ -29,11 +32,19 @@ char httpStr[256] = {0};
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
 bool lights_status = false;
 bool remote_control_inited = false;
+bool house_switch_override = false;
 
-char* getSystemStatus() {
-
+char* getSystemStatus()
+{
+  String html;
+  if (house_switch_override) {
+    html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><span style=\"font-size:90px\">Remote control <span style=\"color:Red;\">disabled</span> because the main switch is on.</span></body></html>";
+    memset(systemStatusPageStr, 0, SYS_STATUS_PAGE_STR_LEN);
+    html.toCharArray(systemStatusPageStr, html.length() + 1);
+    return systemStatusPageStr;
+  }
   // Pardon the html mess. Gotta tell the browser to not make the text super tiny.
-  String html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
+  html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
   html += "<script>function toggle() {var xhttp = new XMLHttpRequest();xhttp.open('POST', 'toggle_lights', true);xhttp.onload = function(){console.log(this.responseText); document.getElementById('toggle_button').value = this.responseText; document.getElementById('lights_span').innerHTML = this.responseText == 'Turn Off' ? 'ON' : 'OFF'; document.getElementById('lights_span').style = this.responseText == 'Turn Off' ? 'color:Green;' : 'color:Red;'; }; xhttp.send('poop');}</script>";
 
   html += "<span style=\"font-size:90px\">";
@@ -101,7 +112,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, OFF);
 
+  pinMode(DRIVEWAY_LIGHTS, OUTPUT);
   digitalWrite(DRIVEWAY_LIGHTS, LOW);
+
   pinMode(HOUSE_SWITCH, INPUT_PULLUP);
 
   Serial.begin(115200);
@@ -118,10 +131,15 @@ void setup() {
 
 void loop() {
 
-  if(digitalRead(HOUSE_SWITCH))
+  if(digitalRead(HOUSE_SWITCH) == HOUSE_SWITCH_OFF) {
     digitalWrite(LED_BUILTIN, OFF);
-  else
+    digitalWrite(DRIVEWAY_LIGHTS, LOW);
+    house_switch_override = false;
+  } else {
     digitalWrite(LED_BUILTIN, ON);
+    digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+    house_switch_override = true;
+  }
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
