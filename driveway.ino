@@ -18,6 +18,8 @@
 #define ON  LOW
 #define OFF HIGH
 
+#define ON_TIME    300000
+
 #define HOUSE_SWITCH_ON   LOW
 #define HOUSE_SWITCH_OFF  HIGH
 
@@ -378,7 +380,7 @@ void setup() {
 
   if(connectToWifi()) init_remote_control();
 
-  on_set_time = 60000;
+  on_set_time = ON_TIME;
   current_switch_state = last_switch_state = stable_state = digitalRead(HOUSE_SWITCH);
   last_change_time = millis();
 }
