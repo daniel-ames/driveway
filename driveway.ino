@@ -5,12 +5,14 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266HTTPUpdateServer.h>
-#include "street_cred.h"
+#include "street_cred.h"  // This has my wifi credentials and other things I'm not dumb enough to put on my github
 
 #define MAX_WIFI_WAIT   10
 
 #define DRIVEWAY_LIGHTS  14
 #define HOUSE_SWITCH     12
+
+#define PULSE_SIGNAL_TIME  2000
 
 // the builtin led is active low for some dipshit reason
 #define ON  LOW
@@ -18,6 +20,25 @@
 
 #define HOUSE_SWITCH_ON   LOW
 #define HOUSE_SWITCH_OFF  HIGH
+
+enum {
+  nobody,
+  timer,
+  house_switch,
+  web_interface,
+  close_sensor,
+  far_sensor
+};
+
+unsigned long last_on_time_house_switch = 0,
+              last_on_time_web_interface = 0,
+              last_on_time_close_sensor = 0,
+              last_on_time_far_sensor = 0;
+unsigned long last_off_time_house_switch = 0,
+              last_off_time_web_interface = 0,
+              last_off_time_close_sensor = 0,
+              last_off_time_far_sensor = 0,
+              last_off_time_timer = 0;
 
 const char* ota_hostname = "driveway";
 
@@ -30,14 +51,38 @@ ESP8266HTTPUpdateServer httpUpdater;
 char httpStr[256] = {0};
 #define SYS_STATUS_PAGE_STR_LEN 2048
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
-bool lights_status = false;
+char responseStr[64];
+bool lights_on = false;
 bool remote_control_inited = false;
-bool house_switch_override = false;
+bool house_switch_on = false;
+bool house_switch_changed = false;
+
+
+unsigned long on_time = 0,
+              on_start_time = 0,
+              on_set_time = 0;
+
+int on_request = nobody,
+    off_request = nobody;
+unsigned char current_state = 0;
+int on_reason = 0;
+bool debounce_started = false;
+unsigned long start_time = 0,
+              current_time = 0;
+
+
+void IRAM_ATTR switch_pressed_vector()
+{
+  detachInterrupt(HOUSE_SWITCH);
+  house_switch_changed = true;
+}
+
+
 
 char* getSystemStatus()
 {
   String html;
-  if (house_switch_override) {
+  if (house_switch_on) {
     html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><span style=\"font-size:90px\">Remote control <span style=\"color:Red;\">disabled</span> because the main switch is on.</span></body></html>";
     memset(systemStatusPageStr, 0, SYS_STATUS_PAGE_STR_LEN);
     html.toCharArray(systemStatusPageStr, html.length() + 1);
@@ -45,15 +90,15 @@ char* getSystemStatus()
   }
   // Pardon the html mess. Gotta tell the browser to not make the text super tiny.
   html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
-  html += "<script>function toggle() {var xhttp = new XMLHttpRequest();xhttp.open('POST', 'toggle_lights', true);xhttp.onload = function(){console.log(this.responseText); document.getElementById('toggle_button').value = this.responseText; document.getElementById('lights_span').innerHTML = this.responseText == 'Turn Off' ? 'ON' : 'OFF'; document.getElementById('lights_span').style = this.responseText == 'Turn Off' ? 'color:Green;' : 'color:Red;'; }; xhttp.send('poop');}</script>";
+  html += "<script>function toggle() {var xhttp = new XMLHttpRequest();xhttp.open('POST', 'toggle_lights', true);xhttp.onload = function(){console.log(this.responseText);var inner;var style;var val;var disabled = false;if(this.responseText.startsWith('on')) {inner = 'ON';style = 'color:Green;';val = 'Turn Off';} else {inner = 'OFF';style = 'color:Red;';val = 'Turn On';}if(this.responseText.endsWith('on')){val = 'disabled';disabled = true;}document.getElementById('toggle_button').value = val;document.getElementById('toggle_button').disabled = disabled;document.getElementById('lights_span').innerHTML = inner;document.getElementById('lights_span').style = style;};xhttp.send('poop');}</script>";
 
   html += "<span style=\"font-size:90px\">";
 
-  // Longest string example, 82 chars: Notifications are <span id='lights_span' style="color:Green;">ON</span>    
-  snprintf(httpStr, 82, "Lights are %s    ", lights_status ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
+  // Longest string example, 82 chars: Notifications are <span id='lights_span' style="color:Green;">ON</span>
+  snprintf(httpStr, 82, "Lights are %s    ", lights_on ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
   html += httpStr;
   html += "<input type='button' id='toggle_button' value='";
-  html += lights_status ? "Turn Off" : "Turn On";
+  html += house_switch_on ? "disabled" : (lights_on ? "Turn Off" : "Turn On");
   html += "' onclick='toggle()' style=\"font-size:90px; padding:20px 40px;\">";
   html += "</span></br>";
   
@@ -101,24 +146,31 @@ void init_remote_control()
     httpServer.send(200, "text/html", getSystemStatus());
   });
   httpServer.on("/toggle_lights", HTTP_POST, []() {
-    lights_status = !lights_status;
-    digitalWrite(DRIVEWAY_LIGHTS, lights_status ? HIGH : LOW);
-    httpServer.send(200, "text/plain", lights_status ? "Turn Off" : "Turn On");
+    String status = "";
+    on_request = web_interface;
+    handle_light_requests();
+
+    if(lights_on) status = "on";
+    else status = "off";
+    if(house_switch_on) status += ":on";
+    else status += ":off";
+    status.toCharArray(responseStr, status.length() + 1);
+    httpServer.send(200, "text/plain", responseStr);
   });
   remote_control_inited = true;
 }
 
 void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, OFF);
 
   pinMode(DRIVEWAY_LIGHTS, OUTPUT);
-  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
 
-  pinMode(HOUSE_SWITCH, INPUT_PULLUP);
-
-  Serial.begin(115200);
-  delay(1000);
+  pinMode(HOUSE_SWITCH, INPUT);
   Serial.println("Hello");
 
   Serial.println(); Serial.println();
@@ -126,20 +178,120 @@ void setup() {
   Serial.println(ssid);
 
   if(connectToWifi()) init_remote_control();
+
+  on_set_time = 5000;
+
+  attachInterrupt(HOUSE_SWITCH, switch_pressed_vector, CHANGE);
+  // attachInterrupt(HOUSE_SWITCH, switch_released_vector, FALLING);
+}
+
+// I want ONE single place that turns on the lights
+void turn_lights_on(int reason)
+{
+  lights_on = true;
+  on_reason = reason;
+  on_start_time = millis();
+  Serial.print("turning lights on. Reason: ");
+  Serial.println(reason);
+  switch(reason) {
+    case house_switch:
+      last_on_time_house_switch = on_start_time;
+      break;
+    case web_interface:
+      last_on_time_web_interface = on_start_time;
+      break;
+    // case sensors: TODO - buy sensors
+    //   break;
+  }
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+}
+
+void turn_lights_off(int reason)
+{
+  lights_on = false;
+  on_start_time = 0;
+  switch(reason) {
+    case house_switch:
+      last_off_time_house_switch = millis();
+      break;
+    case web_interface:
+      last_off_time_web_interface = millis();
+      break;
+    case timer:
+      last_off_time_timer = millis();
+      break;
+  }
+  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+}
+
+void handle_light_requests()
+{
+  if (!on_request && !off_request) return;
+
+  switch (on_request) {
+    case house_switch:
+      // just turn them on regardless of their current state
+      turn_lights_on(house_switch);
+      house_switch_on = true;
+      on_request = nobody;
+      break;
+    case web_interface:
+      // just turn them on regardless of their current state
+      turn_lights_on(web_interface);
+      on_request = nobody;
+      break;
+  }
+  switch (off_request) {
+    case timer:
+      // Timer expired
+      if(house_switch_on) break;
+      turn_lights_off(timer);
+      off_request = nobody;
+      break;
+    case house_switch:
+      if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
+      turn_lights_off(house_switch);
+      house_switch_on = false;
+      off_request = nobody;
+      break;
+  }
 }
 
 
 void loop() {
 
-  if(digitalRead(HOUSE_SWITCH) == HOUSE_SWITCH_OFF) {
-    digitalWrite(LED_BUILTIN, OFF);
-    digitalWrite(DRIVEWAY_LIGHTS, LOW);
-    house_switch_override = false;
-  } else {
-    digitalWrite(LED_BUILTIN, ON);
-    digitalWrite(DRIVEWAY_LIGHTS, HIGH);
-    house_switch_override = true;
+  if (lights_on) {
+    // How long have they been on?
+    on_time = millis() - on_start_time;
+    if (on_time >= on_set_time) {
+      // on time has expired. React.
+      off_request = timer;
+    }
   }
+
+  if(house_switch_changed) {
+    // start debounce
+    current_time = millis();
+    if(!start_time)
+      start_time = current_time;
+    if (current_time - start_time > 200) {
+      // Debounce period done. React to switch state.
+      if(digitalRead(HOUSE_SWITCH) == HOUSE_SWITCH_ON) {
+        on_request = house_switch;
+        Serial.print("switch on\n");
+      } else {
+        off_request = house_switch;
+        Serial.print("switch off\n");
+      }
+      // reset stuff
+      house_switch_changed = false;
+      start_time = 0;
+      attachInterrupt(HOUSE_SWITCH, switch_pressed_vector, CHANGE);
+    }
+  }
+
+  handle_light_requests();
+
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
