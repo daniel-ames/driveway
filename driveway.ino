@@ -283,8 +283,6 @@ void turn_lights_on(int reason)
   lights_on = true;
   on_reason = reason;
   on_start_time = millis();
-  Serial.print("turning lights on. Reason: ");
-  Serial.println(reason);
   switch(reason) {
     case house_switch:
       last_on_time_house_switch = on_start_time;
@@ -296,6 +294,7 @@ void turn_lights_on(int reason)
     //   break;
   }
   digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+  digitalWrite(LED_BUILTIN, ON);
 }
 
 void turn_lights_off(int reason)
@@ -314,6 +313,7 @@ void turn_lights_off(int reason)
       break;
   }
   digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(LED_BUILTIN, OFF);
 }
 
 void handle_light_requests()
@@ -383,6 +383,22 @@ void setup() {
   last_change_time = millis();
 }
 
+unsigned long reconnect_interval = 1000;
+void reconnect_wifi()
+{
+  static unsigned long prev_millis = 0;
+  static bool led_state = false;
+  unsigned long current_millis = millis();
+  if(current_millis - prev_millis >= reconnect_interval) {
+    prev_millis = current_millis;
+    Serial.print("WiFi is down. Connecting to ");
+    Serial.println(ssid);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    led_state = !led_state;
+    digitalWrite(LED_BUILTIN, led_state);
+  }
+}
 
 void loop() {
   
@@ -400,13 +416,10 @@ void loop() {
         // Debounce period done. React to switch state.
         stable_state = last_switch_state;
 
-        if(last_switch_state == HOUSE_SWITCH_ON) {
+        if(last_switch_state == HOUSE_SWITCH_ON)
           on_request = house_switch;
-          Serial.print("switch on\n");
-        } else {
+        else
           off_request = house_switch;
-          Serial.print("switch off\n");
-        }
       } else {
         // It wiggled, but after the debounce, it's still what it was
         // after the last change. That's a blip, not a change.
@@ -431,15 +444,14 @@ void loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
-    Serial.print("WiFi is down. Connecting");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    delay(1000);
-    if (WiFi.status() == WL_CONNECTED && !remote_control_inited)
-      init_remote_control();
+    reconnect_wifi();
   } else {
-    httpServer.handleClient();
-    MDNS.update();
+    if (remote_control_inited) {
+      httpServer.handleClient();
+      MDNS.update();
+    } else {
+      init_remote_control();
+    }
   }
 
 }
