@@ -70,15 +70,6 @@ bool debounce_started = false;
 unsigned long start_time = 0,
               current_time = 0;
 
-
-void IRAM_ATTR switch_pressed_vector()
-{
-  detachInterrupt(HOUSE_SWITCH);
-  house_switch_changed = true;
-}
-
-
-
 char* getSystemStatus()
 {
   String html;
@@ -160,31 +151,6 @@ void init_remote_control()
   remote_control_inited = true;
 }
 
-void setup() {
-  Serial.begin(115200);
-  delay(2000);
-
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, OFF);
-
-  pinMode(DRIVEWAY_LIGHTS, OUTPUT);
-  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
-
-  pinMode(HOUSE_SWITCH, INPUT);
-  Serial.println("Hello");
-
-  Serial.println(); Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-
-  if(connectToWifi()) init_remote_control();
-
-  on_set_time = 5000;
-
-  attachInterrupt(HOUSE_SWITCH, switch_pressed_vector, CHANGE);
-  // attachInterrupt(HOUSE_SWITCH, switch_released_vector, FALLING);
-}
-
 // I want ONE single place that turns on the lights
 void turn_lights_on(int reason)
 {
@@ -203,7 +169,7 @@ void turn_lights_on(int reason)
     // case sensors: TODO - buy sensors
     //   break;
   }
-  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
 }
 
 void turn_lights_off(int reason)
@@ -221,7 +187,7 @@ void turn_lights_off(int reason)
       last_off_time_timer = millis();
       break;
   }
-  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
 }
 
 void handle_light_requests()
@@ -258,35 +224,75 @@ void handle_light_requests()
 }
 
 
-void loop() {
+unsigned long last_change_time = 0;
+bool current_switch_state = false,
+     last_switch_state = false,
+     stable_state = false;
 
+void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, OFF);
+
+  pinMode(DRIVEWAY_LIGHTS, OUTPUT);
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+
+  pinMode(HOUSE_SWITCH, INPUT_PULLUP);
+  Serial.println("Hello");
+
+  Serial.println(); Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  if(connectToWifi()) init_remote_control();
+
+  on_set_time = 3000;
+  current_switch_state = last_switch_state = stable_state = digitalRead(HOUSE_SWITCH);
+  last_change_time = millis();
+}
+
+
+void loop() {
+  
+  current_switch_state = digitalRead(HOUSE_SWITCH);
+  if(current_switch_state != last_switch_state) {
+    last_switch_state = current_switch_state;
+    house_switch_changed = true;
+    last_change_time = millis();
+  }
+  
+  if(house_switch_changed) {
+    // start debounce
+    if (millis() - last_change_time > 200) {
+      if (last_switch_state != stable_state) {
+        // Debounce period done. React to switch state.
+        stable_state = last_switch_state;
+        if(last_switch_state == HOUSE_SWITCH_ON) {
+          on_request = house_switch;
+          Serial.print("switch on\n");
+        } else {
+          off_request = house_switch;
+          Serial.print("switch off\n");
+        }
+      } else {
+        // It wiggled, but after the debounce, it's still what it was
+        // after the last change. That's a blip, not a change.
+        (void)0;
+      }
+      // reset stuff
+      house_switch_changed = false;
+    }
+  }
+  
+  
   if (lights_on) {
     // How long have they been on?
     on_time = millis() - on_start_time;
     if (on_time >= on_set_time) {
       // on time has expired. React.
       off_request = timer;
-    }
-  }
-
-  if(house_switch_changed) {
-    // start debounce
-    current_time = millis();
-    if(!start_time)
-      start_time = current_time;
-    if (current_time - start_time > 200) {
-      // Debounce period done. React to switch state.
-      if(digitalRead(HOUSE_SWITCH) == HOUSE_SWITCH_ON) {
-        on_request = house_switch;
-        Serial.print("switch on\n");
-      } else {
-        off_request = house_switch;
-        Serial.print("switch off\n");
-      }
-      // reset stuff
-      house_switch_changed = false;
-      start_time = 0;
-      attachInterrupt(HOUSE_SWITCH, switch_pressed_vector, CHANGE);
     }
   }
 
