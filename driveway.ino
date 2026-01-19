@@ -49,7 +49,7 @@ ESP8266WebServer httpServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
 
 char httpStr[256] = {0};
-#define SYS_STATUS_PAGE_STR_LEN 2048
+#define SYS_STATUS_PAGE_STR_LEN 2560
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
 char responseStr[128];
 char time_left[64];
@@ -118,45 +118,65 @@ void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
 char* getSystemStatus()
 {
   String html;
-  // if (house_switch_on) {
-  //   html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><span style=\"font-size:90px\">Remote control <span style=\"color:Red;\">disabled</span> because the main switch is on.</span></body></html>";
-  //   memset(systemStatusPageStr, 0, SYS_STATUS_PAGE_STR_LEN);
-  //   html.toCharArray(systemStatusPageStr, html.length() + 1);
-  //   return systemStatusPageStr;
-  // }
   // Pardon the html mess. Gotta tell the browser to not make the text super tiny.
   html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
-  //html += "<script>function pulse() {var xhttp = new XMLHttpRequest();xhttp.open('POST', 'pulse_lights', true);xhttp.onload = function(){console.log(this.responseText);var inner;var style;var val;var disabled = false;if(this.responseText.startsWith('on')) {inner = 'ON';style = 'color:Green;';val = 'Turn Off';} else {inner = 'OFF';style = 'color:Red;';val = 'Turn On';}if(this.responseText.endsWith('on')){val = 'disabled';disabled = true;}document.getElementById('pulse_button').value = val;document.getElementById('pulse_button').disabled = disabled;document.getElementById('lights_span').innerHTML = inner;document.getElementById('lights_span').style = style;};xhttp.send('poop');}</script>";
-  html += 
+  html +=
     "<script>"
     "  function pulse() {"
     "    var xhttp = new XMLHttpRequest();"
     "    xhttp.open('POST', 'pulse_lights', true);"
     "    xhttp.onload = function(){"
     "      console.log(this.responseText);"
-    "      var inner;"
-    "      var outer;"
-    "      var style;"
-    "      var val;"
+    "      const pb = document.getElementById('pulse_button');"
+    "      const cb = document.getElementById('cancel_button');"
+    "      const ls = document.getElementById('lights_span');"
+    "      const os = document.getElementById('outer_span');"
     "      if(this.responseText.startsWith('on')) {"
-    "        inner = 'ON';"
-    "        style = 'color:Green;';"
+    "        ls.innerHTML = 'ON';"
+    "        ls.style = 'color:Green;';"
+    "        if(this.responseText.endsWith('on')) {"
+    "          os.innerHTML = 'because the main switch is on';"
+    "          pb.style.display = 'none';"
+    "          cb.style.display = 'none';"
+    "        } else {"
+    "          os.innerHTML = 'for ' + this.responseText.substring(this.responseText.indexOf(':') + 1);"
+    "          pb.style.display = 'block';"
+    "          cb.style.display = 'block';"
+    "          pb.value = 'Restart Timer';"
+    "        }"
     "      } else {"
-    "        inner = 'OFF';"
-    "        style = 'color:Red;';"
-    "        val = 'Turn On';"
+    "        ls.innerHTML = 'OFF';"
+    "        ls.style = 'color:Red;';"
+    "        pb.style.display = 'block';"
+    "        cb.style.display = 'none';"
+    "        pb.value = 'Turn On';"
     "      }"
-    "      if(this.responseText.endsWith('on')) {"
-    "        outer = 'because the main switch is on';"
-    "        document.getElementById('pulse_button').display = 'none';"
+    "    };"
+    "    xhttp.send('poop');"
+    "  }"
+    "  function cancel_now() {"
+    "    var xhttp = new XMLHttpRequest();"
+    "    xhttp.open('POST', 'cancel_lights', true);"
+    "    xhttp.onload = function(){"
+    "      console.log(this.responseText);"
+    "      const pb = document.getElementById('pulse_button');"
+    "      const cb = document.getElementById('cancel_button');"
+    "      const ls = document.getElementById('lights_span');"
+    "      const os = document.getElementById('outer_span');"
+    "      if(this.responseText.startsWith('ok')) {"
+    "        ls.innerHTML = 'OFF';"
+    "        ls.style = 'color:Red;';"
+    "        pb.style.display = 'block';"
+    "        cb.style.display = 'none';"
+    "        pb.value = 'Turn On';"
+    "        os.innerHTML = '';"
     "      } else {"
-    "        outer = 'for ' + this.responseText.substring(this.responseText.indexOf(':') + 1);"
-    "        val = 'Restart Timer';"
+    "        ls.innerHTML = 'ON';"
+    "        ls.style = 'color:Green;';"
+    "        os.innerHTML = 'because the main switch is on';"
+    "        pb.style.display = 'none';"
+    "        cb.style.display = 'none';"
     "      }"
-    "      document.getElementById('pulse_button').value = val;"
-    "      document.getElementById('lights_span').innerHTML = inner;"
-    "      document.getElementById('lights_span').style = style;"
-    "      document.getElementById('outer_span').innerHTML = outer;"
     "    };"
     "    xhttp.send('poop');"
     "  }"
@@ -181,6 +201,9 @@ char* getSystemStatus()
     html += "<input type='button' id='pulse_button' value='";
     html += lights_on ? "Restart Timer" : "Turn On";
     html += "' onclick='pulse()' style=\"font-size:90px; padding:20px 40px;\">";
+    if(lights_on) {
+      html += "</br><input type='button' id='cancel_button' value='Turn Off Naur' onclick='cancel_now()' style=\"font-size:90px; padding:20px 40px;\">";
+    }
   }
   html += "</span></br>";
   
@@ -228,7 +251,7 @@ void init_remote_control()
     httpServer.send(200, "text/html", getSystemStatus());
   });
   httpServer.on("/pulse_lights", HTTP_POST, []() {
-    String status = "%s:%s";
+    String status;
     on_request = web_interface;
     handle_light_requests();
 
@@ -239,6 +262,15 @@ void init_remote_control()
     status += ":";
     if(house_switch_on) status += "on";
     else status += time_left;
+    status.toCharArray(responseStr, status.length() + 1);
+    httpServer.send(200, "text/plain", responseStr);
+  });
+  httpServer.on("/cancel_lights", HTTP_POST, []() {
+    String status;
+    if(!house_switch_on) {
+      off_request = web_interface;
+      status = "ok";
+    } else status = "house_switch_on";
     status.toCharArray(responseStr, status.length() + 1);
     httpServer.send(200, "text/plain", responseStr);
   });
@@ -313,6 +345,10 @@ void handle_light_requests()
       off_request = nobody;
       if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
       turn_lights_off(house_switch);
+      break;
+    case web_interface:
+      off_request = nobody;
+      turn_lights_off(web_interface);
       break;
   }
 }
@@ -395,9 +431,10 @@ void loop() {
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
+    Serial.print("WiFi is down. Connecting");
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
-    delay(500);
+    delay(1000);
     if (WiFi.status() == WL_CONNECTED && !remote_control_inited)
       init_remote_control();
   } else {
