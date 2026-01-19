@@ -12,7 +12,7 @@
 #define DRIVEWAY_LIGHTS  14
 #define HOUSE_SWITCH     12
 
-#define PULSE_SIGNAL_TIME  2000
+#define PULSE_SIGNAL_TIME  1000
 
 // the builtin led is active low for some dipshit reason
 #define ON  LOW
@@ -176,7 +176,7 @@ char* getSystemStatus()
     html += time_left;
   }
   
-  html += "</span>";
+  html += "</span></br>";
   if (!house_switch_on) {
     html += "<input type='button' id='pulse_button' value='";
     html += lights_on ? "Restart Timer" : "Turn On";
@@ -309,10 +309,10 @@ void handle_light_requests()
       off_request = nobody;
       break;
     case house_switch:
-      if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
-      turn_lights_off(house_switch);
       house_switch_on = false;
       off_request = nobody;
+      if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
+      turn_lights_off(house_switch);
       break;
   }
 }
@@ -363,6 +363,7 @@ void loop() {
       if (last_switch_state != stable_state) {
         // Debounce period done. React to switch state.
         stable_state = last_switch_state;
+
         if(last_switch_state == HOUSE_SWITCH_ON) {
           on_request = house_switch;
           Serial.print("switch on\n");
