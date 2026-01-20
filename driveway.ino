@@ -5,15 +5,42 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266HTTPUpdateServer.h>
-#include "street_cred.h"
+#include "street_cred.h"  // This has my wifi credentials and other things I'm not dumb enough to put on my github
 
 #define MAX_WIFI_WAIT   10
 
 #define DRIVEWAY_LIGHTS  14
+#define HOUSE_SWITCH     12
+
+#define PULSE_SIGNAL_TIME  1000
 
 // the builtin led is active low for some dipshit reason
 #define ON  LOW
 #define OFF HIGH
+
+#define ON_TIME    300000
+
+#define HOUSE_SWITCH_ON   LOW
+#define HOUSE_SWITCH_OFF  HIGH
+
+enum {
+  nobody,
+  timer,
+  house_switch,
+  web_interface,
+  close_sensor,
+  far_sensor
+};
+
+unsigned long last_on_time_house_switch = 0,
+              last_on_time_web_interface = 0,
+              last_on_time_close_sensor = 0,
+              last_on_time_far_sensor = 0;
+unsigned long last_off_time_house_switch = 0,
+              last_off_time_web_interface = 0,
+              last_off_time_close_sensor = 0,
+              last_off_time_far_sensor = 0,
+              last_off_time_timer = 0;
 
 const char* ota_hostname = "driveway";
 
@@ -24,25 +51,162 @@ ESP8266WebServer httpServer(80);
 ESP8266HTTPUpdateServer httpUpdater;
 
 char httpStr[256] = {0};
-#define SYS_STATUS_PAGE_STR_LEN 2048
+#define SYS_STATUS_PAGE_STR_LEN 2560
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
-bool lights_status = false;
+char responseStr[128];
+char time_left[64];
+bool lights_on = false;
 bool remote_control_inited = false;
+bool house_switch_on = false;
+bool house_switch_changed = false;
 
-char* getSystemStatus() {
 
+unsigned long on_time = 0,
+              on_start_time = 0,
+              on_set_time = 0;
+
+int on_request = nobody,
+    off_request = nobody;
+unsigned char current_state = 0;
+int on_reason = 0;
+bool debounce_started = false;
+unsigned long start_time = 0,
+              current_time = 0;
+
+// Converts milliseconds into natural language
+void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
+{  
+  uint seconds = milliseconds / 1000;
+  memset(str, 0, length);
+
+  if (seconds <= 60) {
+    // It's only been a few seconds
+    // Longest string example, 11 chars: 59 seconds\0
+    snprintf(str, 11, "%d second%s", seconds, seconds == 1 ? "" : "s");
+    return;
+  }
+  uint minutes = seconds / 60;
+  if (minutes <= 60) {
+    // It's only been a few minutes
+    // Longest string example, 11 chars: 59 minutes\0
+    snprintf(str, 11, "%d minute%s", minutes, minutes == 1 ? "" : "s");
+    return;
+  }
+  uint hours = minutes / 60;
+  minutes -= hours * 60;
+  if (hours <= 24) {
+    // It's only been a few hours
+    if (minutes == 0)
+      // Longest string example, 9 chars: 23 hours\0
+      snprintf(str, 9, "%d hour%s", hours, hours == 1 ? "" : "s");
+    else
+      // Longest string example, 24 chars: 23 hours and 59 minutes\0
+      snprintf(str, 24, "%d hour%s and %d minute%s", hours, hours == 1 ? "" : "s", minutes, minutes == 1 ? "" : "s");
+    return;
+  }
+
+  // It's been more than a day
+  uint days = hours / 24;
+  hours -= days * 24;
+  if (minutes == 0)
+    // Longest string example, 23 chars: 9999 days and 23 hours\0
+    snprintf(str, 23, "%d day%s and %d hour%s", days, days == 1 ? "" : "s", hours, hours == 1 ? "" : "s");
+  else
+    // Longest string example, 35 chars: 9999 days, 23 hours and 59 minutes\0
+    snprintf(str, 35, "%d day%s, %d hour%s and %d minute%s", days, days == 1 ? "" : "s", hours, hours == 1 ? "" : "s", minutes, minutes == 1 ? "" : "s");
+}
+
+
+char* getSystemStatus()
+{
+  String html;
   // Pardon the html mess. Gotta tell the browser to not make the text super tiny.
-  String html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
-  html += "<script>function toggle() {var xhttp = new XMLHttpRequest();xhttp.open('POST', 'toggle_lights', true);xhttp.onload = function(){console.log(this.responseText); document.getElementById('toggle_button').value = this.responseText; document.getElementById('lights_span').innerHTML = this.responseText == 'Turn Off' ? 'ON' : 'OFF'; document.getElementById('lights_span').style = this.responseText == 'Turn Off' ? 'color:Green;' : 'color:Red;'; }; xhttp.send('poop');}</script>";
+  html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
+  html +=
+    "<script>"
+    "  function pulse() {"
+    "    var xhttp = new XMLHttpRequest();"
+    "    xhttp.open('POST', 'pulse_lights', true);"
+    "    xhttp.onload = function(){"
+    "      console.log(this.responseText);"
+    "      const pb = document.getElementById('pulse_button');"
+    "      const cb = document.getElementById('cancel_button');"
+    "      const ls = document.getElementById('lights_span');"
+    "      const os = document.getElementById('outer_span');"
+    "      if(this.responseText.startsWith('on')) {"
+    "        ls.innerHTML = 'ON';"
+    "        ls.style = 'color:Green;';"
+    "        if(this.responseText.endsWith('on')) {"
+    "          os.innerHTML = 'because the main switch is on';"
+    "          pb.style.display = 'none';"
+    "          cb.style.display = 'none';"
+    "        } else {"
+    "          os.innerHTML = 'for ' + this.responseText.substring(this.responseText.indexOf(':') + 1);"
+    "          pb.style.display = 'block';"
+    "          cb.style.display = 'block';"
+    "          pb.value = 'Restart Timer';"
+    "        }"
+    "      } else {"
+    "        ls.innerHTML = 'OFF';"
+    "        ls.style = 'color:Red;';"
+    "        pb.style.display = 'block';"
+    "        cb.style.display = 'none';"
+    "        pb.value = 'Turn On';"
+    "      }"
+    "    };"
+    "    xhttp.send('poop');"
+    "  }"
+    "  function cancel_now() {"
+    "    var xhttp = new XMLHttpRequest();"
+    "    xhttp.open('POST', 'cancel_lights', true);"
+    "    xhttp.onload = function(){"
+    "      console.log(this.responseText);"
+    "      const pb = document.getElementById('pulse_button');"
+    "      const cb = document.getElementById('cancel_button');"
+    "      const ls = document.getElementById('lights_span');"
+    "      const os = document.getElementById('outer_span');"
+    "      if(this.responseText.startsWith('ok')) {"
+    "        ls.innerHTML = 'OFF';"
+    "        ls.style = 'color:Red;';"
+    "        pb.style.display = 'block';"
+    "        cb.style.display = 'none';"
+    "        pb.value = 'Turn On';"
+    "        os.innerHTML = '';"
+    "      } else {"
+    "        ls.innerHTML = 'ON';"
+    "        ls.style = 'color:Green;';"
+    "        os.innerHTML = 'because the main switch is on';"
+    "        pb.style.display = 'none';"
+    "        cb.style.display = 'none';"
+    "      }"
+    "    };"
+    "    xhttp.send('poop');"
+    "  }"
+    "</script>";
 
   html += "<span style=\"font-size:90px\">";
 
-  // Longest string example, 82 chars: Notifications are <span id='lights_span' style="color:Green;">ON</span>    
-  snprintf(httpStr, 82, "Lights are %s    ", lights_status ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
+  // Longest string example, 82 chars: Notifications are <span id='lights_span' style="color:Green;">ON</span>
+  snprintf(httpStr, 82, "Lights are %s    ", lights_on ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
   html += httpStr;
-  html += "<input type='button' id='toggle_button' value='";
-  html += lights_status ? "Turn Off" : "Turn On";
-  html += "' onclick='toggle()' style=\"font-size:90px; padding:20px 40px;\">";
+  html += "<span id='outer_span'>";
+  if (house_switch_on) {
+    html += "because the main switch is on";
+  } else if (lights_on) {
+    millisToDaysHoursMinutes( on_set_time - (millis() - on_start_time), time_left, 64);
+    html += "for ";
+    html += time_left;
+  }
+  
+  html += "</span></br>";
+  if (!house_switch_on) {
+    html += "<input type='button' id='pulse_button' value='";
+    html += lights_on ? "Restart Timer" : "Turn On";
+    html += "' onclick='pulse()' style=\"font-size:90px; padding:20px 40px;\">";
+    if(lights_on) {
+      html += "</br><input type='button' id='cancel_button' value='Turn Off Naur' onclick='cancel_now()' style=\"font-size:90px; padding:20px 40px;\">";
+    }
+  }
   html += "</span></br>";
   
   // Close it off
@@ -88,20 +252,126 @@ void init_remote_control()
     httpServer.sendHeader("Connection", "close");
     httpServer.send(200, "text/html", getSystemStatus());
   });
-  httpServer.on("/toggle_lights", HTTP_POST, []() {
-    lights_status = !lights_status;
-    digitalWrite(DRIVEWAY_LIGHTS, lights_status ? HIGH : LOW);
-    httpServer.send(200, "text/plain", lights_status ? "Turn Off" : "Turn On");
+  httpServer.on("/pulse_lights", HTTP_POST, []() {
+    String status;
+    on_request = web_interface;
+    handle_light_requests();
+
+    millisToDaysHoursMinutes( on_set_time - (millis() - on_start_time), time_left, 64);
+
+    if(lights_on) status = "on";
+    else status = "off";
+    status += ":";
+    if(house_switch_on) status += "on";
+    else status += time_left;
+    status.toCharArray(responseStr, status.length() + 1);
+    httpServer.send(200, "text/plain", responseStr);
+  });
+  httpServer.on("/cancel_lights", HTTP_POST, []() {
+    String status;
+    if(!house_switch_on) {
+      off_request = web_interface;
+      status = "ok";
+    } else status = "house_switch_on";
+    status.toCharArray(responseStr, status.length() + 1);
+    httpServer.send(200, "text/plain", responseStr);
   });
   remote_control_inited = true;
 }
 
+// I want ONE single place that turns on the lights
+void turn_lights_on(int reason)
+{
+  lights_on = true;
+  on_reason = reason;
+  on_start_time = millis();
+  switch(reason) {
+    case house_switch:
+      last_on_time_house_switch = on_start_time;
+      break;
+    case web_interface:
+      last_on_time_web_interface = on_start_time;
+      break;
+    // case sensors: TODO - buy sensors
+    //   break;
+  }
+  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+  digitalWrite(LED_BUILTIN, ON);
+}
+
+void turn_lights_off(int reason)
+{
+  lights_on = false;
+  on_start_time = 0;
+  switch(reason) {
+    case house_switch:
+      last_off_time_house_switch = millis();
+      break;
+    case web_interface:
+      last_off_time_web_interface = millis();
+      break;
+    case timer:
+      last_off_time_timer = millis();
+      break;
+  }
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(LED_BUILTIN, OFF);
+}
+
+void handle_light_requests()
+{
+  if (!on_request && !off_request) return;
+
+  switch (on_request) {
+    case house_switch:
+      // just turn them on regardless of their current state
+      turn_lights_on(house_switch);
+      house_switch_on = true;
+      on_request = nobody;
+      break;
+    case web_interface:
+      // just turn them on regardless of their current state
+      turn_lights_on(web_interface);
+      on_request = nobody;
+      break;
+  }
+  switch (off_request) {
+    case timer:
+      // Timer expired
+      if(house_switch_on) break;
+      turn_lights_off(timer);
+      off_request = nobody;
+      break;
+    case house_switch:
+      house_switch_on = false;
+      off_request = nobody;
+      if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
+      turn_lights_off(house_switch);
+      break;
+    case web_interface:
+      off_request = nobody;
+      turn_lights_off(web_interface);
+      break;
+  }
+}
+
+
+unsigned long last_change_time = 0;
+bool current_switch_state = false,
+     last_switch_state = false,
+     stable_state = false;
+
 void setup() {
+  Serial.begin(115200);
+  delay(2000);
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, OFF);
 
-  Serial.begin(115200);
-  delay(1000);
+  pinMode(DRIVEWAY_LIGHTS, OUTPUT);
+  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+
+  pinMode(HOUSE_SWITCH, INPUT_PULLUP);
   Serial.println("Hello");
 
   Serial.println(); Serial.println();
@@ -109,21 +379,81 @@ void setup() {
   Serial.println(ssid);
 
   if(connectToWifi()) init_remote_control();
+
+  on_set_time = ON_TIME;
+  current_switch_state = last_switch_state = stable_state = digitalRead(HOUSE_SWITCH);
+  last_change_time = millis();
 }
 
+unsigned long reconnect_interval = 1000;
+void reconnect_wifi()
+{
+  static unsigned long prev_millis = 0;
+  static bool led_state = false;
+  unsigned long current_millis = millis();
+  if(current_millis - prev_millis >= reconnect_interval) {
+    prev_millis = current_millis;
+    Serial.print("WiFi is down. Connecting to ");
+    Serial.println(ssid);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    led_state = !led_state;
+    digitalWrite(LED_BUILTIN, led_state);
+  }
+}
 
 void loop() {
+  
+  current_switch_state = digitalRead(HOUSE_SWITCH);
+  if(current_switch_state != last_switch_state) {
+    last_switch_state = current_switch_state;
+    house_switch_changed = true;
+    last_change_time = millis();
+  }
+  
+  if(house_switch_changed) {
+    // start debounce
+    if (millis() - last_change_time > 100) {
+      if (last_switch_state != stable_state) {
+        // Debounce period done. React to switch state.
+        stable_state = last_switch_state;
+
+        if(last_switch_state == HOUSE_SWITCH_ON)
+          on_request = house_switch;
+        else
+          off_request = house_switch;
+      } else {
+        // It wiggled, but after the debounce, it's still what it was
+        // after the last change. That's a blip, not a change.
+        (void)0;
+      }
+      // reset stuff
+      house_switch_changed = false;
+    }
+  }
+  
+  
+  if (lights_on) {
+    // How long have they been on?
+    if (millis() - on_start_time >= on_set_time) {
+      // on time has expired. React.
+      off_request = timer;
+    }
+  }
+
+  handle_light_requests();
+
 
   if (WiFi.status() != WL_CONNECTED) {
     // wifi died. try to reconnect
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
-    delay(500);
-    if (WiFi.status() == WL_CONNECTED && !remote_control_inited)
-      init_remote_control();
+    reconnect_wifi();
   } else {
-    httpServer.handleClient();
-    MDNS.update();
+    if (remote_control_inited) {
+      httpServer.handleClient();
+      MDNS.update();
+    } else {
+      init_remote_control();
+    }
   }
 
 }
