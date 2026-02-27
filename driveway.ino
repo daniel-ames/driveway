@@ -1,10 +1,9 @@
 //
 // This conrols the driveway lights
 //
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <ESP8266mDNS.h>
-#include <ESP8266HTTPUpdateServer.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Update.h>
 #include "street_cred.h"  // This has my wifi credentials and other things I'm not dumb enough to put on my github
 
 #define MAX_WIFI_WAIT   10
@@ -42,13 +41,7 @@ unsigned long last_off_time_house_switch = 0,
               last_off_time_far_sensor = 0,
               last_off_time_timer = 0;
 
-const char* ota_hostname = "driveway";
-
-const char* host = "optiplex";
-const uint16_t port = 27910;
-
-ESP8266WebServer httpServer(80);
-ESP8266HTTPUpdateServer httpUpdater;
+WebServer web_server(80);
 
 char httpStr[256] = {0};
 #define SYS_STATUS_PAGE_STR_LEN 2560
@@ -243,16 +236,11 @@ bool connectToWifi()
 
 void init_remote_control()
 {
-  MDNS.begin(ota_hostname);
-  httpUpdater.setup(&httpServer);
-  httpServer.begin();
-  MDNS.addService("http", "tcp", 80);
-
-  httpServer.on("/", HTTP_GET, []() {
-    httpServer.sendHeader("Connection", "close");
-    httpServer.send(200, "text/html", getSystemStatus());
+  web_server.on("/", HTTP_GET, []() {
+    web_server.sendHeader("Connection", "close");
+    web_server.send(200, "text/html", getSystemStatus());
   });
-  httpServer.on("/pulse_lights", HTTP_POST, []() {
+  web_server.on("/pulse_lights", HTTP_POST, []() {
     String status;
     on_request = web_interface;
     handle_light_requests();
@@ -265,17 +253,18 @@ void init_remote_control()
     if(house_switch_on) status += "on";
     else status += time_left;
     status.toCharArray(responseStr, status.length() + 1);
-    httpServer.send(200, "text/plain", responseStr);
+    web_server.send(200, "text/plain", responseStr);
   });
-  httpServer.on("/cancel_lights", HTTP_POST, []() {
+  web_server.on("/cancel_lights", HTTP_POST, []() {
     String status;
     if(!house_switch_on) {
       off_request = web_interface;
       status = "ok";
     } else status = "house_switch_on";
     status.toCharArray(responseStr, status.length() + 1);
-    httpServer.send(200, "text/plain", responseStr);
+    web_server.send(200, "text/plain", responseStr);
   });
+  web_server.begin();
   remote_control_inited = true;
 }
 
@@ -449,8 +438,7 @@ void loop() {
     reconnect_wifi();
   } else {
     if (remote_control_inited) {
-      httpServer.handleClient();
-      MDNS.update();
+      web_server.handleClient();
     } else {
       init_remote_control();
     }
