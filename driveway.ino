@@ -14,13 +14,14 @@
 #define PULSE_SIGNAL_TIME  1000
 
 // the builtin led is active low for some dipshit reason
-#define ON  LOW
-#define OFF HIGH
+#define ON  HIGH
+#define OFF LOW
 
 #define ON_TIME    300000
 
 #define HOUSE_SWITCH_ON   LOW
 #define HOUSE_SWITCH_OFF  HIGH
+
 
 enum {
   nobody,
