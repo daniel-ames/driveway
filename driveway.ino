@@ -18,6 +18,9 @@
 #define ON  HIGH
 #define OFF LOW
 
+#define RELAY_ON   LOW
+#define RELAY_OFF  HIGH
+
 #define ON_TIME    300000
 
 #define HOUSE_SWITCH_ON   LOW
@@ -70,7 +73,7 @@ unsigned long start_time = 0,
 
 // Converts milliseconds into natural language
 void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
-{  
+{
   uint seconds = milliseconds / 1000;
   memset(str, 0, length);
 
@@ -81,10 +84,16 @@ void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
     return;
   }
   uint minutes = seconds / 60;
+  seconds -= minutes * 60;
   if (minutes <= 60) {
     // It's only been a few minutes
-    // Longest string example, 11 chars: 59 minutes\0
-    snprintf(str, 11, "%d minute%s", minutes, minutes == 1 ? "" : "s");
+    if (seconds == 0) {
+      // Longest string example, 11 chars: 59 minutes\0
+      snprintf(str, 11, "%d minute%s", minutes, minutes == 1 ? "" : "s");
+    } else {
+      // Longest string example, 26 chars: 59 minutes and 59 seconds\0
+      snprintf(str, 26, "%d minute%s and %d second%s", minutes, minutes == 1 ? "" : "s", seconds, seconds == 1 ? "" : "s");
+    }
     return;
   }
   uint hours = minutes / 60;
@@ -315,7 +324,7 @@ void turn_lights_on(int reason)
     // case sensors: TODO - buy sensors
     //   break;
   }
-  digitalWrite(DRIVEWAY_LIGHTS, HIGH);
+  digitalWrite(DRIVEWAY_LIGHTS, RELAY_ON);
   digitalWrite(LED_BUILTIN, ON);
 }
 
@@ -334,7 +343,7 @@ void turn_lights_off(int reason)
       last_off_time_timer = millis();
       break;
   }
-  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(DRIVEWAY_LIGHTS, RELAY_OFF);
   digitalWrite(LED_BUILTIN, OFF);
 }
 
@@ -389,7 +398,7 @@ void setup() {
   digitalWrite(LED_BUILTIN, OFF);
 
   pinMode(DRIVEWAY_LIGHTS, OUTPUT);
-  digitalWrite(DRIVEWAY_LIGHTS, LOW);
+  digitalWrite(DRIVEWAY_LIGHTS, RELAY_OFF);
 
   pinMode(HOUSE_SWITCH, INPUT_PULLUP);
   Serial.println("Hello");
