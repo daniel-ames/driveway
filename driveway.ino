@@ -14,13 +14,17 @@
 
 #define PULSE_SIGNAL_TIME  1000
 
-// the builtin led is active low for some dipshit reason
+// New board, new active state rules
 #define ON  HIGH
 #define OFF LOW
 
+// Using ye olde opto-isolated SRD-05VDC-SL-C module.
+// 5v from Vin to power the coil, and 3v3 from GPIO to
+// drive the PC817. Anyway, this means it's active low.
 #define RELAY_ON   LOW
 #define RELAY_OFF  HIGH
 
+// TODO: make this configurable from the web interface
 #define ON_TIME    300000
 
 #define HOUSE_SWITCH_ON   LOW
@@ -71,7 +75,7 @@ bool debounce_started = false;
 unsigned long start_time = 0,
               current_time = 0;
 
-// Converts milliseconds into natural language
+// Convert milliseconds into natural language
 void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
 {
   uint seconds = milliseconds / 1000;
@@ -328,6 +332,7 @@ void turn_lights_on(int reason)
   digitalWrite(LED_BUILTIN, ON);
 }
 
+// I want ONE single place that turns off the lights
 void turn_lights_off(int reason)
 {
   lights_on = false;
