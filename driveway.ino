@@ -4,12 +4,13 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Update.h>
+#include "html.h"
 #include "street_cred.h"  // This has my wifi credentials and other things I'm not dumb enough to put on my github
 
 #define MAX_WIFI_WAIT   10
 
-#define DRIVEWAY_LIGHTS  14
-#define HOUSE_SWITCH     12
+#define DRIVEWAY_LIGHTS  16
+#define HOUSE_SWITCH     19
 
 #define PULSE_SIGNAL_TIME  1000
 
@@ -265,6 +266,35 @@ void init_remote_control()
     status.toCharArray(responseStr, status.length() + 1);
     web_server.send(200, "text/plain", responseStr);
   });
+  web_server.on("/update", HTTP_GET, []() {
+    web_server.sendHeader("Connection", "close");
+    web_server.send(200, "text/html", update_html);
+  });
+  /*handling uploading firmware file */
+  web_server.on("/update_backend", HTTP_POST, []() {
+    web_server.sendHeader("Connection", "close");
+    web_server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart();
+  }, []() {
+    HTTPUpload& upload = web_server.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+      Serial.printf("Update: %s\n", upload.filename.c_str());
+      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //start with max available size
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
+      if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+        Update.printError(Serial);
+      }
+    } else if (upload.status == UPLOAD_FILE_END) {
+      if (Update.end(true)) { //true to set the size to the current progress
+        Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+      } else {
+        Update.printError(Serial);
+      }
+    }
+  });
   web_server.begin();
   remote_control_inited = true;
 }
@@ -375,7 +405,7 @@ void setup() {
   last_change_time = millis();
 }
 
-unsigned long reconnect_interval = 1000;
+unsigned long reconnect_interval = 5000;
 void reconnect_wifi()
 {
   static unsigned long prev_millis = 0;
