@@ -7,6 +7,32 @@
 #include "html.h"
 #include "street_cred.h"  // This has my wifi credentials and other things I'm not dumb enough to put on my github
 
+
+
+#ifndef FW_GIT_DESCRIBE
+  // Optional: inject this at build time later.
+  // For now it will show "unknown".
+  #define FW_GIT_DESCRIBE "unknown"
+#endif
+
+typedef struct {
+  const char* git;     // e.g. "v1.2.3-4-gabc1234-dirty" or "unknown"
+  const char* date;    // __DATE__
+  const char* time;    // __TIME__
+  const char* file;    // __FILE__ (handy when you have multiple sketches)
+  int line;            // __LINE__ of the definition below
+} fw_build_info_t;
+
+const fw_build_info_t fw_info = {
+  .git   = FW_GIT_DESCRIBE,
+  .date  = __DATE__,
+  .time  = __TIME__,
+  .file  = __FILE__,
+  .line  = __LINE__,
+};
+
+
+
 #define MAX_WIFI_WAIT   10
 
 #define DRIVEWAY_LIGHTS  16
@@ -53,9 +79,9 @@ unsigned long last_off_time_house_switch = 0,
 
 WebServer web_server(80);
 
-#define SYS_STATUS_PAGE_STR_LEN 2560
-char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
-char responseStr[128];
+#define HTML_PAGE_STR_LEN 2560
+char page_str[HTML_PAGE_STR_LEN];
+char response_str[128];
 char time_left[64];
 bool lights_on = false;
 bool remote_control_inited = false;
@@ -119,7 +145,24 @@ void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
 }
 
 
-char* getSystemStatus()
+char* system_info()
+{
+  String html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\"><span style=\"font-size:90px\">";
+
+  html += "Build Date: " + String(fw_info.date) + "</br>";
+  html += "Build Time: " + String(fw_info.time) + "</br>";
+  html += "RSSI  : " + String(WiFi.RSSI()) + "</br>";
+  millisToDaysHoursMinutes(millis(), time_left, 64);
+  html += "Uptime: " + String(time_left) + "</br>";
+  html += "</span></br></p></body></html>";
+
+  memset(page_str, 0, HTML_PAGE_STR_LEN);
+  html.toCharArray(page_str, html.length() + 1);
+  return page_str;
+}
+
+
+char* light_control()
 {
   String html = main_page_html;
   char str[256] = {0};
@@ -152,9 +195,9 @@ char* getSystemStatus()
   // Close it off
   html += "</p></body></html>";
 
-  memset(systemStatusPageStr, 0, SYS_STATUS_PAGE_STR_LEN);
-  html.toCharArray(systemStatusPageStr, html.length() + 1);
-  return systemStatusPageStr;
+  memset(page_str, 0, HTML_PAGE_STR_LEN);
+  html.toCharArray(page_str, html.length() + 1);
+  return page_str;
 }
 
 
@@ -185,7 +228,7 @@ void init_remote_control()
 {
   web_server.on("/", HTTP_GET, []() {
     web_server.sendHeader("Connection", "close");
-    web_server.send(200, "text/html", getSystemStatus());
+    web_server.send(200, "text/html", light_control());
   });
   web_server.on("/pulse_lights", HTTP_POST, []() {
     String status;
@@ -200,8 +243,8 @@ void init_remote_control()
     status += ":";
     if(house_switch_on) status += "on";
     else status += time_left;
-    status.toCharArray(responseStr, status.length() + 1);
-    web_server.send(200, "text/plain", responseStr);
+    status.toCharArray(response_str, status.length() + 1);
+    web_server.send(200, "text/plain", response_str);
   });
   web_server.on("/cancel_lights", HTTP_POST, []() {
     String status;
@@ -210,8 +253,12 @@ void init_remote_control()
       handle_light_requests();
       status = "ok";
     } else status = "house_switch_on";
-    status.toCharArray(responseStr, status.length() + 1);
-    web_server.send(200, "text/plain", responseStr);
+    status.toCharArray(response_str, status.length() + 1);
+    web_server.send(200, "text/plain", response_str);
+  });
+  web_server.on("/info", HTTP_GET, []() {
+    web_server.sendHeader("Connection", "close");
+    web_server.send(200, "text/html", system_info());
   });
   web_server.on("/update", HTTP_GET, []() {
     web_server.sendHeader("Connection", "close");
