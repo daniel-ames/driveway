@@ -12,11 +12,12 @@
 #define DRIVEWAY_LIGHTS  16
 #define HOUSE_SWITCH     19
 
-#define PULSE_SIGNAL_TIME  1000
+#define HOUSE_SWITCH_GESTURE_PULSE_WINDOW  1000
+#define DEBOUNCE_MS   100
 
 // New board, new active state rules
-#define ON  HIGH
-#define OFF LOW
+#define LED_ON  HIGH
+#define LED_OFF LOW
 
 // Using ye olde opto-isolated SRD-05VDC-SL-C module.
 // 5v from Vin to power the coil, and 3v3 from GPIO to
@@ -31,7 +32,7 @@
 #define HOUSE_SWITCH_OFF  HIGH
 
 
-enum {
+enum reason_code_e : uint8_t {
   nobody,
   timer,
   house_switch,
@@ -52,7 +53,6 @@ unsigned long last_off_time_house_switch = 0,
 
 WebServer web_server(80);
 
-char httpStr[256] = {0};
 #define SYS_STATUS_PAGE_STR_LEN 2560
 char systemStatusPageStr[SYS_STATUS_PAGE_STR_LEN];
 char responseStr[128];
@@ -63,17 +63,11 @@ bool house_switch_on = false;
 bool house_switch_changed = false;
 
 
-unsigned long on_time = 0,
-              on_start_time = 0,
+unsigned long on_start_time = 0,
               on_set_time = 0;
 
-int on_request = nobody,
-    off_request = nobody;
-unsigned char current_state = 0;
-int on_reason = 0;
-bool debounce_started = false;
-unsigned long start_time = 0,
-              current_time = 0;
+reason_code_e on_request = nobody,
+              off_request = nobody;
 
 // Convert milliseconds into natural language
 void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
@@ -127,81 +121,19 @@ void millisToDaysHoursMinutes(unsigned long milliseconds, char* str, int length)
 
 char* getSystemStatus()
 {
-  String html;
-  // Pardon the html mess. Gotta tell the browser to not make the text super tiny.
-  html = "<!DOCTYPE html><html><head><title>Driveway Lights</title></head><body><p style=\"font-size:36px\">";
-  html +=
-    "<script>"
-    "  function pulse() {"
-    "    var xhttp = new XMLHttpRequest();"
-    "    xhttp.open('POST', 'pulse_lights', true);"
-    "    xhttp.onload = function(){"
-    "      console.log(this.responseText);"
-    "      const pb = document.getElementById('pulse_button');"
-    "      const cb = document.getElementById('cancel_button');"
-    "      const ls = document.getElementById('lights_span');"
-    "      const os = document.getElementById('outer_span');"
-    "      if(this.responseText.startsWith('on')) {"
-    "        ls.innerHTML = 'ON';"
-    "        ls.style = 'color:Green;';"
-    "        if(this.responseText.endsWith('on')) {"
-    "          os.innerHTML = 'because the main switch is on';"
-    "          pb.style.display = 'none';"
-    "          cb.style.display = 'none';"
-    "        } else {"
-    "          os.innerHTML = 'for ' + this.responseText.substring(this.responseText.indexOf(':') + 1);"
-    "          pb.style.display = 'block';"
-    "          cb.style.display = 'block';"
-    "          pb.value = 'Restart Timer';"
-    "        }"
-    "      } else {"
-    "        ls.innerHTML = 'OFF';"
-    "        ls.style = 'color:Red;';"
-    "        pb.style.display = 'block';"
-    "        cb.style.display = 'none';"
-    "        pb.value = 'Turn On';"
-    "      }"
-    "    };"
-    "    xhttp.send('poop');"
-    "  }"
-    "  function cancel_now() {"
-    "    var xhttp = new XMLHttpRequest();"
-    "    xhttp.open('POST', 'cancel_lights', true);"
-    "    xhttp.onload = function(){"
-    "      console.log(this.responseText);"
-    "      const pb = document.getElementById('pulse_button');"
-    "      const cb = document.getElementById('cancel_button');"
-    "      const ls = document.getElementById('lights_span');"
-    "      const os = document.getElementById('outer_span');"
-    "      if(this.responseText.startsWith('ok')) {"
-    "        ls.innerHTML = 'OFF';"
-    "        ls.style = 'color:Red;';"
-    "        pb.style.display = 'block';"
-    "        cb.style.display = 'none';"
-    "        pb.value = 'Turn On';"
-    "        os.innerHTML = '';"
-    "      } else {"
-    "        ls.innerHTML = 'ON';"
-    "        ls.style = 'color:Green;';"
-    "        os.innerHTML = 'because the main switch is on';"
-    "        pb.style.display = 'none';"
-    "        cb.style.display = 'none';"
-    "      }"
-    "    };"
-    "    xhttp.send('poop');"
-    "  }"
-    "</script>";
-
-  html += "<span style=\"font-size:90px\">";
+  String html = main_page_html;
+  char str[256] = {0};
 
   // Longest string example, 82 chars: Notifications are <span id='lights_span' style="color:Green;">ON</span>
-  snprintf(httpStr, 82, "Lights are %s    ", lights_on ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
-  html += httpStr;
+  snprintf(str, 82, "Lights are %s    ", lights_on ? "<span id='lights_span' style=\"color:Green;\">ON</span>" : "<span id='lights_span' style=\"color:Red;\">OFF</span>");
+  html += str;
   html += "<span id='outer_span'>";
   if (house_switch_on) {
     html += "because the main switch is on";
   } else if (lights_on) {
-    millisToDaysHoursMinutes( on_set_time - (millis() - on_start_time), time_left, 64);
+    unsigned long elapsed = millis() - on_start_time;
+    unsigned long remaining = (elapsed >= on_set_time) ? 0 : (on_set_time - elapsed);
+    millisToDaysHoursMinutes(remaining, time_left, 64);
     html += "for ";
     html += time_left;
   }
@@ -260,7 +192,8 @@ void init_remote_control()
     on_request = web_interface;
     handle_light_requests();
 
-    millisToDaysHoursMinutes( on_set_time - (millis() - on_start_time), time_left, 64);
+    if(lights_on && !house_switch_on)
+      millisToDaysHoursMinutes( on_set_time - (millis() - on_start_time), time_left, 64);
 
     if(lights_on) status = "on";
     else status = "off";
@@ -274,6 +207,7 @@ void init_remote_control()
     String status;
     if(!house_switch_on) {
       off_request = web_interface;
+      handle_light_requests();
       status = "ok";
     } else status = "house_switch_on";
     status.toCharArray(responseStr, status.length() + 1);
@@ -313,10 +247,9 @@ void init_remote_control()
 }
 
 // I want ONE single place that turns on the lights
-void turn_lights_on(int reason)
+void turn_lights_on(reason_code_e reason)
 {
   lights_on = true;
-  on_reason = reason;
   on_start_time = millis();
   switch(reason) {
     case house_switch:
@@ -329,11 +262,11 @@ void turn_lights_on(int reason)
     //   break;
   }
   digitalWrite(DRIVEWAY_LIGHTS, RELAY_ON);
-  digitalWrite(LED_BUILTIN, ON);
+  digitalWrite(LED_BUILTIN, LED_ON);
 }
 
 // I want ONE single place that turns off the lights
-void turn_lights_off(int reason)
+void turn_lights_off(reason_code_e reason)
 {
   lights_on = false;
   on_start_time = 0;
@@ -349,7 +282,7 @@ void turn_lights_off(int reason)
       break;
   }
   digitalWrite(DRIVEWAY_LIGHTS, RELAY_OFF);
-  digitalWrite(LED_BUILTIN, OFF);
+  digitalWrite(LED_BUILTIN, LED_OFF);
 }
 
 void handle_light_requests()
@@ -379,7 +312,19 @@ void handle_light_requests()
     case house_switch:
       house_switch_on = false;
       off_request = nobody;
-      if(millis() - last_on_time_house_switch < PULSE_SIGNAL_TIME) break;
+      if(millis() - last_on_time_house_switch < HOUSE_SWITCH_GESTURE_PULSE_WINDOW) {
+        // Someone turned the house switch ON, and then turned it back OFF 
+        // less than HOUSE_SWITCH_GESTURE_PULSE_WINDOW milliseconds later.
+        //
+        // What this means:
+        //   The user is requesting the lights to turn on, and stay on, temporarily.
+        //   Usually to give me enough time to back out of the driveway in the dark.
+        //   So instead of turning the lights off here, just bail and let the
+        //   normal off-timer expire, which will then turn them off automatically.
+        //   That way, I don't have to worry about turning them back off after
+        //   I've driven away. They will turn off automatically.
+        break;
+      }
       turn_lights_off(house_switch);
       break;
     case web_interface:
@@ -400,7 +345,7 @@ void setup() {
   delay(2000);
 
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, OFF);
+  digitalWrite(LED_BUILTIN, LED_OFF);
 
   pinMode(DRIVEWAY_LIGHTS, OUTPUT);
   digitalWrite(DRIVEWAY_LIGHTS, RELAY_OFF);
@@ -437,7 +382,7 @@ void reconnect_wifi()
 }
 
 void loop() {
-  
+
   current_switch_state = digitalRead(HOUSE_SWITCH);
   if(current_switch_state != last_switch_state) {
     last_switch_state = current_switch_state;
@@ -447,7 +392,7 @@ void loop() {
   
   if(house_switch_changed) {
     // start debounce
-    if (millis() - last_change_time > 100) {
+    if (millis() - last_change_time > DEBOUNCE_MS) {
       if (last_switch_state != stable_state) {
         // Debounce period done. React to switch state.
         stable_state = last_switch_state;
@@ -467,7 +412,13 @@ void loop() {
   }
   
   
-  if (lights_on) {
+  if (lights_on && !house_switch_on && off_request == nobody) {
+    // The lights are on...
+    //   AND --> it's NOT because the house switch is on,
+    //   AND --> no other vector is requesting to turn them off.
+    //
+    // So it's up to the timer to decide when to turn them off.
+
     // How long have they been on?
     if (millis() - on_start_time >= on_set_time) {
       // on time has expired. React.
