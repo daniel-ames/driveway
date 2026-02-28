@@ -3,7 +3,6 @@
 
 
 char *update_html =
-"<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
 "<form method='POST' action='#' enctype='multipart/form-data' id='upload_form'>"
 "  <input type='file' name='update'>"
 "  <input type='submit' value='Update'>"
